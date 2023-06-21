@@ -35,6 +35,7 @@ import androidx.fragment.app.FragmentManager;
 
 import com.android.wallpaper.R;
 import com.android.wallpaper.model.Category;
+import com.android.wallpaper.model.CustomizationSectionController.CustomizationSectionNavigationController;
 import com.android.wallpaper.model.PermissionRequester;
 import com.android.wallpaper.model.WallpaperCategory;
 import com.android.wallpaper.model.WallpaperInfo;
@@ -67,6 +68,7 @@ public class CustomizationPickerActivity extends FragmentActivity implements App
         WallpaperPreviewNavigator {
 
     private static final String TAG = "CustomizationPickerActivity";
+    private static final String EXTRA_DESTINATION = "destination";
 
     private WallpaperPickerDelegate mDelegate;
     private UserEventLogger mUserEventLogger;
@@ -76,6 +78,7 @@ public class CustomizationPickerActivity extends FragmentActivity implements App
 
     private BottomActionBar mBottomActionBar;
     private boolean mIsSafeToCommitFragmentTransaction;
+    private boolean mIsUseRevampedUi;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -105,6 +108,10 @@ public class CustomizationPickerActivity extends FragmentActivity implements App
         // See go/pdr-edge-to-edge-guide.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), isSUWMode(this));
 
+        mIsUseRevampedUi = injector.getFlags().isUseRevampedUiEnabled(this);
+        final boolean startFromLockScreen = getIntent() == null
+                || !ActivityUtils.isLaunchedFromLauncher(getIntent());
+
         Fragment fragment = getSupportFragmentManager().findFragmentById(R.id.fragment_container);
         if (fragment == null) {
             // App launch specific logic: log the "app launch source" event.
@@ -116,20 +123,47 @@ public class CustomizationPickerActivity extends FragmentActivity implements App
 
             // Switch to the target fragment.
             switchFragment(isWallpaperOnlyMode(getIntent())
-                    ? new WallpaperOnlyFragment()
-                    : new CustomizationPickerFragment());
+                    ? WallpaperOnlyFragment.newInstance(mIsUseRevampedUi)
+                    : CustomizationPickerFragment.newInstance(
+                            mIsUseRevampedUi, startFromLockScreen));
+
+            // Cache the categories, but only if we're not restoring state (b/276767415).
+            mDelegate.prefetchCategories();
         }
 
-        // Deep link case
-        Intent intent = getIntent();
-        String deepLinkCollectionId = DeepLinkUtils.getCollectionId(intent);
-        if (!TextUtils.isEmpty(deepLinkCollectionId)) {
+        if (savedInstanceState == null) {
+            // We only want to start a new undo session if this activity is brand-new. A non-new
+            // activity will have a non-null savedInstanceState.
+            if (mIsUseRevampedUi) {
+                injector.getUndoInteractor(this).startSession();
+            }
+        }
+
+        final Intent intent = getIntent();
+        final String navigationDestination = intent.getStringExtra(EXTRA_DESTINATION);
+        // Consume the destination and commit the intent back so the OS doesn't revert to the same
+        // destination when we change color or wallpaper (which causes the activity to be
+        // recreated).
+        intent.removeExtra(EXTRA_DESTINATION);
+        setIntent(intent);
+
+        final String deepLinkCollectionId = DeepLinkUtils.getCollectionId(intent);
+
+        if (!TextUtils.isEmpty(navigationDestination)) {
+            // Navigation deep link case
+            fragment = getSupportFragmentManager().findFragmentById(R.id.fragment_container);
+            if (fragment instanceof CustomizationSectionNavigationController) {
+                final CustomizationSectionNavigationController navController =
+                        (CustomizationSectionNavigationController) fragment;
+                navController.navigateTo(navigationDestination);
+            }
+        } else if (!TextUtils.isEmpty(deepLinkCollectionId)) {
+            // Wallpaper Collection deep link case
             switchFragmentWithBackStack(new CategorySelectorFragment());
             switchFragmentWithBackStack(InjectorProvider.getInjector().getIndividualPickerFragment(
-                    deepLinkCollectionId));
+                    this, deepLinkCollectionId));
             intent.setData(null);
         }
-        mDelegate.prefetchCategories();
     }
 
     @Override
@@ -233,7 +267,7 @@ public class CustomizationPickerActivity extends FragmentActivity implements App
             return;
         }
         switchFragmentWithBackStack(InjectorProvider.getInjector().getIndividualPickerFragment(
-                category.getCollectionId()));
+                this, category.getCollectionId()));
     }
 
     @Override
@@ -310,6 +344,15 @@ public class CustomizationPickerActivity extends FragmentActivity implements App
         if (mDelegate.handleActivityResult(requestCode, resultCode, data)) {
             if (isSUWMode(this)) {
                 finishActivityForSUW();
+            } else if (mIsUseRevampedUi) {
+                // We don't finish in the revamped UI to let the user have a chance to reset the
+                // change they made, should they want to. We do, however, remove all the fragments
+                // from our back stack to reveal the root fragment, revealing the main screen of the
+                // app.
+                final FragmentManager fragmentManager = getSupportFragmentManager();
+                while (fragmentManager.getBackStackEntryCount() > 0) {
+                    fragmentManager.popBackStackImmediate();
+                }
             } else {
                 finishActivityWithResultOk();
             }

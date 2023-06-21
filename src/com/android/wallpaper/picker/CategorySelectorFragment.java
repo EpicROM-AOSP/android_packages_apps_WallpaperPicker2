@@ -20,7 +20,6 @@ import static com.android.wallpaper.picker.WallpaperPickerDelegate.PREVIEW_WALLP
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.Context;
 import android.content.Intent;
 import android.content.res.TypedArray;
 import android.graphics.Color;
@@ -48,6 +47,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.android.wallpaper.R;
 import com.android.wallpaper.asset.Asset;
+import com.android.wallpaper.effects.EffectsController;
 import com.android.wallpaper.model.Category;
 import com.android.wallpaper.model.CategoryProvider;
 import com.android.wallpaper.model.LiveWallpaperInfo;
@@ -119,23 +119,19 @@ public class CategorySelectorFragment extends AppbarFragment {
         void cleanUp();
     }
 
-    private final CategoryProvider mCategoryProvider;
-
     private RecyclerView mImageGrid;
     private CategoryAdapter mAdapter;
+    private CategoryProvider mCategoryProvider;
     private ArrayList<Category> mCategories = new ArrayList<>();
     private Point mTileSizePx;
     private boolean mAwaitingCategories;
     private boolean mIsFeaturedCollectionAvailable;
 
-    public CategorySelectorFragment() {
+    @Override
+    public void onCreate(@Nullable Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
         mAdapter = new CategoryAdapter(mCategories);
-        mCategoryProvider = InjectorProvider.getInjector().getCategoryProvider(getContext());
-    }
-
-    public CategorySelectorFragment(Context context) {
-        mAdapter = new CategoryAdapter(mCategories);
-        mCategoryProvider = InjectorProvider.getInjector().getCategoryProvider(context);
+        mCategoryProvider = InjectorProvider.getInjector().getCategoryProvider(requireContext());
     }
 
     @Nullable
@@ -304,6 +300,11 @@ public class CategorySelectorFragment extends AppbarFragment {
             eventLogger.logCategorySelected(mCategory.getCollectionId());
 
             if (mCategory.supportsCustomPhotos()) {
+                EffectsController effectsController =
+                        InjectorProvider.getInjector().getEffectsController(getContext());
+                if (!effectsController.isEffectTriggered()) {
+                    effectsController.triggerEffect(getContext());
+                }
                 getCategorySelectorFragmentHost().requestCustomPhotoPicker(
                         new MyPhotosStarter.PermissionChangedListener() {
                             @Override

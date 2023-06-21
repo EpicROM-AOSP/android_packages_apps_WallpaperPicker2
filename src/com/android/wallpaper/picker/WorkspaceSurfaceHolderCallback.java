@@ -16,7 +16,6 @@
 package com.android.wallpaper.picker;
 
 import android.app.WallpaperColors;
-import android.content.Context;
 import android.os.Bundle;
 import android.os.Message;
 import android.os.RemoteException;
@@ -27,7 +26,6 @@ import android.view.SurfaceView;
 
 import androidx.annotation.Nullable;
 
-import com.android.wallpaper.R;
 import com.android.wallpaper.util.PreviewUtils;
 import com.android.wallpaper.util.SurfaceViewUtils;
 
@@ -48,21 +46,27 @@ public class WorkspaceSurfaceHolderCallback implements SurfaceHolder.Callback {
 
     private static final String TAG = "WsSurfaceHolderCallback";
     private static final String KEY_WALLPAPER_COLORS = "wallpaper_colors";
+    public static final int MESSAGE_ID_UPDATE_PREVIEW = 1337;
+    public static final String KEY_HIDE_BOTTOM_ROW = "hide_bottom_row";
     private final SurfaceView mWorkspaceSurface;
     private final PreviewUtils mPreviewUtils;
     private final boolean mShouldUseWallpaperColors;
     private final AtomicBoolean mRequestPending = new AtomicBoolean(false);
 
     private WallpaperColors mWallpaperColors;
+    private boolean mHideBottomRow;
     private boolean mIsWallpaperColorsReady;
     private Surface mLastSurface;
     private Message mCallback;
     private WorkspaceRenderListener mListener;
 
     private boolean mNeedsToCleanUp;
+    @Nullable private final Bundle mExtras;
 
-    public WorkspaceSurfaceHolderCallback(SurfaceView workspaceSurface, Context context) {
-        this(workspaceSurface, context, false);
+    public WorkspaceSurfaceHolderCallback(
+            SurfaceView workspaceSurface,
+            PreviewUtils previewUtils) {
+        this(workspaceSurface, previewUtils, false, null);
     }
 
     /**
@@ -73,12 +77,33 @@ public class WorkspaceSurfaceHolderCallback implements SurfaceHolder.Callback {
      *                                 the surface is created and wallpaper colors are set via
      *                                 {@link #setWallpaperColors(WallpaperColors)}
      */
-    public WorkspaceSurfaceHolderCallback(SurfaceView workspaceSurface, Context context,
+    public WorkspaceSurfaceHolderCallback(
+            SurfaceView workspaceSurface,
+            PreviewUtils previewUtils,
             boolean shouldUseWallpaperColors) {
+        this(
+                workspaceSurface,
+                previewUtils,
+                shouldUseWallpaperColors,
+                null);
+    }
+
+    public WorkspaceSurfaceHolderCallback(
+            SurfaceView workspaceSurface,
+            PreviewUtils previewUtils,
+            @Nullable Bundle extras) {
+        this(workspaceSurface, previewUtils, false, extras);
+    }
+
+    private WorkspaceSurfaceHolderCallback(
+            SurfaceView workspaceSurface,
+            PreviewUtils previewUtils,
+            boolean shouldUseWallpaperColors,
+            @Nullable Bundle extras) {
         mWorkspaceSurface = workspaceSurface;
-        mPreviewUtils = new PreviewUtils(context,
-                context.getString(R.string.grid_control_metadata_name));
+        mPreviewUtils = previewUtils;
         mShouldUseWallpaperColors = shouldUseWallpaperColors;
+        mExtras = extras;
     }
 
     @Override
@@ -96,7 +121,7 @@ public class WorkspaceSurfaceHolderCallback implements SurfaceHolder.Callback {
      *
      * @param colors WallpaperColors extracted from the current wallpaper preview, or {@code null}
      *               if none are available.
-     * @see #WorkspaceSurfaceHolderCallback(SurfaceView, Context, boolean)
+     * @see #WorkspaceSurfaceHolderCallback(SurfaceView, PreviewUtils, boolean)
      */
     public void setWallpaperColors(@Nullable WallpaperColors colors) {
         if (!mShouldUseWallpaperColors) {
@@ -104,27 +129,45 @@ public class WorkspaceSurfaceHolderCallback implements SurfaceHolder.Callback {
         }
         mWallpaperColors = colors;
         mIsWallpaperColorsReady = true;
-        maybeRenderPreview();
+    }
+
+    /**
+     * Set the current flag if we should hide the workspace bottom row.
+     */
+    public void setHideBottomRow(boolean hideBottomRow) {
+        mHideBottomRow = hideBottomRow;
+    }
+
+    /**
+     * Hides the components in the bottom row.
+     *
+     * @param hide True to hide and false to show.
+     */
+    public void hideBottomRow(boolean hide) {
+        Bundle data = new Bundle();
+        data.putBoolean(KEY_HIDE_BOTTOM_ROW, hide);
+        send(MESSAGE_ID_UPDATE_PREVIEW, data);
     }
 
     public void setListener(WorkspaceRenderListener listener) {
         mListener = listener;
     }
 
-    private void maybeRenderPreview() {
+    /**
+     * Render the preview with the current selected {@link #mWallpaperColors} and
+     * {@link #mHideBottomRow}.
+     */
+    public void maybeRenderPreview() {
         if ((mShouldUseWallpaperColors && !mIsWallpaperColorsReady) || mLastSurface == null) {
             return;
         }
-
         mRequestPending.set(true);
         requestPreview(mWorkspaceSurface, (result) -> {
             mRequestPending.set(false);
             if (result != null && mLastSurface != null) {
                 mWorkspaceSurface.setChildSurfacePackage(
                         SurfaceViewUtils.getSurfacePackage(result));
-
                 mCallback = SurfaceViewUtils.getCallback(result);
-
                 if (mNeedsToCleanUp) {
                     cleanUp();
                 } else if (mListener != null) {
@@ -139,6 +182,27 @@ public class WorkspaceSurfaceHolderCallback implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
+    }
+
+    /**
+     * Sends a message to the remote renderer.
+     *
+     * @param what An ID for the message (the remote side can pick this up through
+     * {@link Message#what}.
+     * @param bundle The data of the message (the remote side can pick this up through
+     * {@link Message#getData()}.
+     */
+    public void send(final int what, @Nullable Bundle bundle) {
+        if (mCallback != null) {
+            try {
+                final Message message = new Message();
+                message.what = what;
+                message.setData(bundle);
+                mCallback.replyTo.send(message);
+            } catch (RemoteException e) {
+                Log.w(TAG, "Couldn't send message to workspace preview", e);
+            }
+        }
     }
 
     public void cleanUp() {
@@ -170,9 +234,10 @@ public class WorkspaceSurfaceHolderCallback implements SurfaceHolder.Callback {
                             + "crash");
             return;
         }
-        Bundle request = SurfaceViewUtils.createSurfaceViewRequest(workspaceSurface);
+        Bundle request = SurfaceViewUtils.createSurfaceViewRequest(workspaceSurface, mExtras);
         if (mWallpaperColors != null) {
             request.putParcelable(KEY_WALLPAPER_COLORS, mWallpaperColors);
+            request.putBoolean(KEY_HIDE_BOTTOM_ROW, mHideBottomRow);
         }
         mPreviewUtils.renderPreview(request, callback);
     }
